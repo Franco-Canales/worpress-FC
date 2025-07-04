@@ -1,0 +1,162 @@
+# --- 1. Namespace para la aplicación ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wordpress
+
+---
+# --- 2. MySQL Persistent Volume Claim (PVC) ---
+# Esta PVC solicitará un volumen de 5GB para los datos de MySQL.
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pv-claim
+  namespace: wordpress
+spec:
+  storageClassName: manual # ¡IMPORTANTE! Debe coincidir con el 'storageClassName' del PV definido en pv-manual.yaml
+  accessModes:
+    - ReadWriteOnce # Permite que solo un pod en un nodo lo monte en modo lectura/escritura
+  resources:
+    requests:
+      storage: 5Gi # Solicita 5 Gigabytes de almacenamiento
+
+---
+# --- 3. WordPress Persistent Volume Claim (PVC) ---
+# Esta PVC solicitará un volumen de 5GB para los archivos de WordPress.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wordpress-pv-claim
+  namespace: wordpress
+spec:
+  storageClassName: manual # ¡IMPORTANTE! Debe coincidir con el 'storageClassName' del PV definido en pv-manual.yaml
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# --- 4. MySQL Deployment ---
+# Define cómo se ejecuta el pod de MySQL.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: wordpress
+  labels:
+    app: mysql
+spec:
+  selector:
+    matchLabels:
+      app: mysql
+  strategy:
+    type: Recreate # Usa la estrategia Recreate para asegurar que el mismo volumen se adjunte al pod
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - image: mysql:5.7 # Imagen de Docker de MySQL versión 5.7
+        name: mysql
+        env: # Variables de entorno para configurar MySQL
+        - name: MYSQL_ROOT_PASSWORD
+          value: "Yanky.2012" # <<--- ¡CAMBIA ESTO!
+        - name: MYSQL_DATABASE
+          value: "wordpressdb" # <<--- Nombre de la base de datos para WordPress
+        - name: MYSQL_USER
+          value: "wpuser"      # <<--- Usuario de la base de datos para WordPress
+        - name: MYSQL_PASSWORD
+          value: "Yanky.2012" # <<--- ¡CAMBIA ESTO! DEBE COINCIDIR CON WORDPRESS_DB_PASSWORD
+        ports:
+        - containerPort: 3306 # Puerto interno del contenedor MySQL
+          name: mysql
+        volumeMounts:
+        - name: mysql-persistent-storage # Nombre del volumen que se montará
+          mountPath: /var/lib/mysql # Ruta dentro del contenedor donde MySQL guarda sus datos
+      volumes:
+      - name: mysql-persistent-storage
+        persistentVolumeClaim:
+          claimName: mysql-pv-claim # Enlaza al PVC de MySQL
+
+---
+# --- 5. MySQL Service (interno para WordPress) ---
+# Permite que el pod de WordPress encuentre y se conecte al pod de MySQL.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql # Este nombre se usará como hostname para la conexión desde WordPress
+  namespace: wordpress
+  labels:
+    app: mysql
+spec:
+  ports:
+    - port: 3306 # Puerto del servicio
+  selector:
+    app: mysql # Selecciona pods con la etiqueta app: mysql
+  clusterIP: None # Un 'headless' Service, para DNS directo a los IPs de los pods (más simple aquí)
+
+---
+# --- 6. WordPress Deployment ---
+# Define cómo se ejecuta el pod de WordPress.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress
+  namespace: wordpress
+  labels:
+    app: wordpress
+spec:
+  selector:
+    matchLabels:
+      app: wordpress
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: wordpress
+    spec:
+      containers:
+      - image: wordpress:latest # Imagen de Docker de WordPress (versión más reciente)
+        name: wordpress
+        env: # Variables de entorno para configurar WordPress
+        - name: WORDPRESS_DB_HOST
+          value: "mysql" # <<--- El nombre del Service de MySQL (definido arriba)
+        - name: WORDPRESS_DB_NAME
+          value: "wordpressdb" # <<--- Debe coincidir con MYSQL_DATABASE
+        - name: WORDPRESS_DB_USER
+          value: "wpuser"      # <<--- Debe coincidir con MYSQL_USER
+        - name: WORDPRESS_DB_PASSWORD
+          value: "Yanky.2012" # <<--- ¡CAMBIA ESTO! DEBE COINCIDIR CON MYSQL_PASSWORD
+        ports:
+        - containerPort: 80 # Puerto interno del contenedor WordPress
+          name: wordpress
+        volumeMounts:
+        - name: wordpress-persistent-storage
+          mountPath: /var/www/html # Ruta dentro del contenedor donde WordPress guarda sus archivos
+      volumes:
+      - name: wordpress-persistent-storage
+        persistentVolumeClaim:
+          claimName: wordpress-pv-claim # Enlaza al PVC de WordPress
+
+---
+# --- 7. WordPress Service (para acceso externo) ---
+# Permite acceder a tu sitio WordPress desde fuera del clúster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress # Nombre del servicio de WordPress
+  namespace: wordpress
+  labels:
+    app: wordpress
+spec:
+  type: NodePort # Expone el servicio en un puerto de cada nodo del clúster
+  ports:
+    - port: 80 # Puerto que el Service expone (el que los usuarios ven en el clúster)
+      targetPort: 80 # Puerto al que se conecta en el contenedor de WordPress
+      nodePort: 30080 # <<--- PUERTO ACCESIBLE DESDE FUERA (elige entre 30000-32767). Puedes cambiarlo si está en uso.
+  selector:
+    app: wordpress # Selecciona pods con la etiqueta app: wordpress
